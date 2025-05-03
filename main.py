@@ -38,7 +38,10 @@ async def download_file(url, folder):
                             file.write(content)
                         logger.info(f"Downloaded: {url}")
                         return
-                    elif response.status in {403, 404, 429}:
+                    elif response.status == 429:
+                        logger.warning(f"Rate limit hit for {url}. Retrying after delay...")
+                        await asyncio.sleep(10)  # Wait 10 seconds before retrying
+                    elif response.status in {403, 404}:
                         logger.warning(f"Failed to download {url}: HTTP {response.status}")
                         return
                     else:
@@ -82,8 +85,8 @@ async def scrape_website_with_pyppeteer(url, folder):
             src = tag.get('href') or tag.get('src')
             if src:
                 resource_url = urljoin(url, src)
-                if resource_url.endswith(('.woff', '.woff2', '.ttf', '.eot')):  # Skip font files
-                    logger.info(f"Skipping font resource: {resource_url}")
+                if resource_url.endswith(('.woff', '.woff2', '.ttf', '.eot', '.svg', '.gif')):  # Skip font and unnecessary files
+                    logger.info(f"Skipping resource: {resource_url}")
                     continue
                 resource_urls.append(resource_url)
 
