@@ -85,7 +85,7 @@ async def scrape_website_with_pyppeteer(url, folder):
             src = tag.get('href') or tag.get('src')
             if src:
                 resource_url = urljoin(url, src)
-                if resource_url.endswith(('.woff', '.woff2', '.ttf', '.eot', '.svg', '.gif')):  # Skip font and unnecessary files
+                if resource_url.endswith(('.woff', '.woff2', '.ttf', '.eot', '.svg', '.gif')):
                     logger.info(f"Skipping resource: {resource_url}")
                     continue
                 resource_urls.append(resource_url)
