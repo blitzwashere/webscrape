@@ -29,6 +29,14 @@ async def download_file(url, folder):
         print(f"Failed to download {url}: {e}")
 
 
+async def download_resources(resource_urls, folder):
+    """
+    Downloads multiple resources concurrently.
+    """
+    tasks = [download_file(url, folder) for url in resource_urls]
+    await asyncio.gather(*tasks)
+
+
 async def scrape_website_with_pyppeteer(url, folder):
     """
     Scrapes a website using pyppeteer and saves its content into the specified folder.
@@ -48,7 +56,8 @@ async def scrape_website_with_pyppeteer(url, folder):
         with open(os.path.join(folder, 'index.html'), 'w', encoding='utf-8') as file:
             file.write(soup.prettify())
 
-        # Download all linked resources (e.g., images, CSS, JS)
+        # Collect all linked resources (e.g., images, CSS, JS)
+        resource_urls = []
         for tag in soup.find_all(['a', 'img', 'link', 'script']):
             src = tag.get('href') or tag.get('src')
             if src:
@@ -56,7 +65,10 @@ async def scrape_website_with_pyppeteer(url, folder):
                 if resource_url.endswith(('.woff', '.woff2', '.ttf', '.eot')):  # Skip font files
                     print(f"Skipping font resource: {resource_url}")
                     continue
-                await download_file(resource_url, folder)
+                resource_urls.append(resource_url)
+
+        # Download all resources concurrently
+        await download_resources(resource_urls, folder)
 
         return True  # Scraping succeeded
     except Exception as e:
