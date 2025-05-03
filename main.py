@@ -11,11 +11,15 @@ from tqdm.asyncio import tqdm
 import unittest
 from tqdm import tqdm
 
+# Ensure the "logs" folder exists
+if not os.path.exists('logs'):
+    os.makedirs('logs')
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
     handlers=[
-        logging.FileHandler("scraper.log"),
+        logging.FileHandler("logs/scraper.log"),  # Log file is now in the "logs" folder
         logging.StreamHandler()
     ]
 )
