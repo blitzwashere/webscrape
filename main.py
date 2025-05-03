@@ -1,4 +1,5 @@
 import os
+import shutil
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
@@ -7,7 +8,22 @@ from urllib.parse import urljoin, urlparse
 if not os.path.exists('sites'):
     os.makedirs('sites')
 
+def get_proxies_from_url(proxies_url):
+    """
+    Fetches proxies from the given URL and returns a list of proxies.
+    """
+    try:
+        response = requests.get(proxies_url, timeout=10)
+        response.raise_for_status()
+        return response.text.splitlines()
+    except Exception as e:
+        print(f"Failed to fetch proxies from {proxies_url}: {e}")
+        return []
+
 def download_file(url, folder, proxies=None):
+    """
+    Downloads a file from the URL and saves it into the specified folder.
+    """
     try:
         response = requests.get(url, proxies=proxies, timeout=10)
         response.raise_for_status()
@@ -18,6 +34,9 @@ def download_file(url, folder, proxies=None):
         print(f"Failed to download {url}: {e}")
 
 def scrape_website(url, folder, proxies=None):
+    """
+    Scrapes the website URL and saves its content into the specified folder.
+    """
     try:
         response = requests.get(url, proxies=proxies, timeout=10)
         response.raise_for_status()
@@ -33,8 +52,11 @@ def scrape_website(url, folder, proxies=None):
             if src:
                 resource_url = urljoin(url, src)
                 download_file(resource_url, folder, proxies)
+
+        return True  # Scraping succeeded
     except Exception as e:
         print(f"Failed to scrape {url}: {e}")
+        return False  # Scraping failed
 
 def main():
     website_url = input("Enter the URL of the website to scrape: ")
@@ -47,20 +69,34 @@ def main():
     if not os.path.exists(folder_name):
         os.makedirs(folder_name)
 
-    # Use proxies from proxies.txt
-    proxies = {}
-    if os.path.exists('proxies.txt'):
-        with open('proxies.txt', 'r') as proxy_file:
-            proxy_list = proxy_file.readlines()
-            if proxy_list:
-                # Example: Use the first proxy in the list
-                proxy = proxy_list[0].strip()
-                proxies = {
-                    'http': f'http://{proxy}',
-                    'https': f'https://{proxy}',
-                }
+    # URL to fetch free proxies
+    proxies_url = "https://raw.githubusercontent.com/proxifly/free-proxy-list/refs/heads/main/proxies/all/data.txt"
+    proxies_list = get_proxies_from_url(proxies_url)
 
-    scrape_website(website_url, folder_name, proxies)
+    if not proxies_list:
+        print("No proxies available. Exiting.")
+        return
+
+    # Attempt to scrape the website with each proxy
+    for proxy in proxies_list:
+        proxies = {
+            'http': f'http://{proxy}',
+            'https': f'http://{proxy}'  # Use HTTP proxy for HTTPS requests
+        }
+
+        print(f"Trying proxy: {proxy}")
+        success = scrape_website(website_url, folder_name, proxies)
+
+        if success:
+            print(f"Successfully scraped {website_url} using proxy {proxy}")
+            break
+        else:
+            print(f"Proxy {proxy} failed. Trying the next one...")
+
+    # If scraping failed with all proxies, remove the incomplete folder
+    if not success:
+        print(f"Removing incomplete folder: {folder_name}")
+        shutil.rmtree(folder_name, ignore_errors=True)
 
 if __name__ == "__main__":
     main()
