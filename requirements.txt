@@ -2,4 +2,3 @@ beautifulsoup4
 aiohttp
 pyppeteer
 jsbeautifier
-base64
