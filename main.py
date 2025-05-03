@@ -5,6 +5,10 @@ from pyppeteer import launch
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
 import aiohttp
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Create the "sites" folder if it doesn't exist
 if not os.path.exists('sites'):
@@ -15,18 +19,34 @@ async def download_file(url, folder):
     """
     Downloads a file from the URL and saves it into the specified folder.
     """
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=10) as response:
-                if response.status == 200:
-                    filename = os.path.join(folder, os.path.basename(url))
-                    with open(filename, 'wb') as file:
-                        content = await response.read()
-                        file.write(content)
-                else:
-                    print(f"Failed to download {url}: HTTP {response.status}")
-    except Exception as e:
-        print(f"Failed to download {url}: {e}")
+    retries = 3
+    backoff = 2  # Exponential backoff factor
+    for attempt in range(retries):
+        try:
+            async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(limit=100, limit_per_host=10)) as session:
+                headers = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                }
+                async with session.get(url, headers=headers, timeout=10) as response:
+                    if response.status == 200:
+                        filename = os.path.join(folder, os.path.basename(url))
+                        if os.path.isdir(filename):
+                            logger.warning(f"Skipping directory: {filename}")
+                            return
+                        with open(filename, 'wb') as file:
+                            content = await response.read()
+                            file.write(content)
+                        logger.info(f"Downloaded: {url}")
+                        return
+                    elif response.status in {403, 404, 429}:
+                        logger.warning(f"Failed to download {url}: HTTP {response.status}")
+                        return
+                    else:
+                        logger.error(f"Unexpected HTTP error {response.status} for {url}")
+        except Exception as e:
+            logger.error(f"Attempt {attempt + 1} failed for {url}: {e}")
+        await asyncio.sleep(backoff ** attempt)  # Exponential backoff
+    logger.error(f"Failed to download {url} after {retries} attempts.")
 
 
 async def download_resources(resource_urls, folder):
@@ -63,16 +83,18 @@ async def scrape_website_with_pyppeteer(url, folder):
             if src:
                 resource_url = urljoin(url, src)
                 if resource_url.endswith(('.woff', '.woff2', '.ttf', '.eot')):  # Skip font files
-                    print(f"Skipping font resource: {resource_url}")
+                    logger.info(f"Skipping font resource: {resource_url}")
                     continue
                 resource_urls.append(resource_url)
 
         # Download all resources concurrently
         await download_resources(resource_urls, folder)
 
+        await asyncio.sleep(5)  # Delay to avoid rate limiting
+
         return True  # Scraping succeeded
     except Exception as e:
-        print(f"Failed to scrape {url}: {e}")
+        logger.error(f"Failed to scrape {url}: {e}")
         return False  # Scraping failed
     finally:
         await browser.close()
@@ -80,21 +102,17 @@ async def scrape_website_with_pyppeteer(url, folder):
 
 def main():
     website_url = input("Enter the URL of the website to scrape: ")
-    # Extract domain name from URL without 'http' or 'https'
     parsed_url = urlparse(website_url)
     domain = parsed_url.netloc
 
-    # Create a folder inside 'sites' with the domain name
     folder_name = os.path.join('sites', domain)
     if not os.path.exists(folder_name):
         os.makedirs(folder_name)
 
-    # Run the asyncio event loop for pyppeteer
-    success = asyncio.get_event_loop().run_until_complete(scrape_website_with_pyppeteer(website_url, folder_name))
-
-    # If scraping failed, remove the incomplete folder
-    if not success:
-        print(f"Removing incomplete folder: {folder_name}")
+    try:
+        asyncio.run(scrape_website_with_pyppeteer(website_url, folder_name))
+    except Exception as e:
+        print(f"An error occurred: {e}")
         shutil.rmtree(folder_name, ignore_errors=True)
 
 
