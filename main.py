@@ -40,7 +40,7 @@ async def download_file(url, folder):
                         return
                     elif response.status == 429:
                         logger.warning(f"Rate limit hit for {url}. Retrying after delay...")
-                        await asyncio.sleep(10)  # Wait 10 seconds before retrying
+                        await asyncio.sleep(backoff ** attempt)  # Exponential backoff
                     elif response.status in {403, 404}:
                         logger.warning(f"Failed to download {url}: HTTP {response.status}")
                         return
