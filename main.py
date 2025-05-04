@@ -8,8 +8,8 @@ from urllib.parse import urljoin, urlparse
 import aiohttp
 import logging
 from tqdm.asyncio import tqdm
-import unittest
 from tqdm import tqdm
+import unittest
 
 # Ensure the "logs" folder exists
 if not os.path.exists('logs'):
@@ -31,10 +31,23 @@ if not os.path.exists('sites'):
 
 semaphore = asyncio.Semaphore(10)  # Limit to 10 concurrent downloads
 
+
+def is_internal_link(base_url, link):
+    """Check if a link is internal to the base URL."""
+    return urlparse(link).netloc == urlparse(base_url).netloc
+
+
+def get_local_path(base_url, resource_url, folder):
+    """Generate a local file path for a resource, preserving folder structure."""
+    parsed_base = urlparse(base_url)
+    parsed_resource = urlparse(resource_url)
+    relative_path = os.path.relpath(parsed_resource.path, '/')
+    local_path = os.path.join(folder, parsed_base.netloc, relative_path)
+    return local_path
+
+
 async def download_file(url, folder, downloaded, skipped, failed):
-    """
-    Downloads a file from the URL and saves it into the specified folder.
-    """
+    """Download a file and save it to the appropriate folder."""
     retries = 3
     backoff = 2  # Exponential backoff factor
     for attempt in range(retries):
@@ -45,11 +58,9 @@ async def download_file(url, folder, downloaded, skipped, failed):
                 }
                 async with session.get(url, headers=headers, timeout=30) as response:
                     if response.status == 200:
-                        filename = os.path.join(folder, os.path.basename(url))
-                        if os.path.isdir(filename):
-                            logger.warning(f"Skipping directory: {filename}")
-                            return
-                        with open(filename, 'wb') as file:
+                        local_path = get_local_path(folder, url, folder)
+                        os.makedirs(os.path.dirname(local_path), exist_ok=True)
+                        with open(local_path, 'wb') as file:
                             content = await response.read()
                             file.write(content)
                         logger.info(f"Downloaded: {url}")
@@ -81,10 +92,12 @@ async def download_resources(resource_urls, folder, downloaded, skipped, failed)
         await download_file_with_limit(url, folder, downloaded, skipped, failed)
 
 
-async def scrape_website_with_pyppeteer(url, folder, timeout, downloaded, skipped, failed):
-    """
-    Scrapes a website using pyppeteer and saves its content into the specified folder.
-    """
+async def scrape_website_with_pyppeteer(url, folder, timeout, downloaded, skipped, failed, visited):
+    """Scrape a website and rewrite links to point to local resources."""
+    if url in visited:
+        return
+    visited.add(url)
+
     # List of social media domains to exclude
     social_media_domains = [
         'facebook.com', 'twitter.com', 'instagram.com', 'linkedin.com',
@@ -94,7 +107,7 @@ async def scrape_website_with_pyppeteer(url, folder, timeout, downloaded, skippe
     browser = await launch(headless=True, args=["--no-sandbox", "--disable-setuid-sandbox"])
     page = await browser.newPage()
     try:
-        await page.goto(url, timeout=30000)
+        await page.goto(url, timeout=timeout * 1000)
         await page.waitForSelector("body")  # Wait for the body element to load
 
         # Get the page content after rendering JavaScript
@@ -103,11 +116,7 @@ async def scrape_website_with_pyppeteer(url, folder, timeout, downloaded, skippe
         # Parse the HTML using BeautifulSoup
         soup = BeautifulSoup(content, 'html.parser')
 
-        # Save the index.html file
-        with open(os.path.join(folder, 'index.html'), 'w', encoding='utf-8') as file:
-            file.write(soup.prettify())
-
-        # Collect all linked resources (e.g., images, CSS, JS)
+        # Rewrite links to point to local resources
         resource_urls = []
         for tag in soup.find_all(['a', 'img', 'link', 'script']):
             src = tag.get('href') or tag.get('src')
@@ -124,24 +133,40 @@ async def scrape_website_with_pyppeteer(url, folder, timeout, downloaded, skippe
                 if "analytics" in resource_url or "tracking" in resource_url:
                     logger.info(f"Skipping analytics/tracking resource: {resource_url}")
                     continue
+
+                # Rewrite the link to point to the local path
+                local_path = get_local_path(url, resource_url, folder)
+                if tag.name == 'a':
+                    tag['href'] = os.path.relpath(local_path, folder)
+                else:
+                    tag['src'] = os.path.relpath(local_path, folder)
+
                 resource_urls.append(resource_url)
 
+        # Save the rewritten HTML
+        local_html_path = get_local_path(url, url, folder)
+        os.makedirs(os.path.dirname(local_html_path), exist_ok=True)
+        with open(local_html_path, 'w', encoding='utf-8') as file:
+            file.write(soup.prettify())
+
         # Download all resources concurrently
-        await download_resources(resource_urls, folder, downloaded, skipped, failed)
+        await asyncio.gather(*[download_file(res_url, folder, downloaded, skipped, failed) for res_url in resource_urls])
 
-        await asyncio.sleep(5)  # Delay to avoid rate limiting
+        # Recursively crawl internal links
+        for tag in soup.find_all('a', href=True):
+            link = urljoin(url, tag['href'])
+            if is_internal_link(url, link):
+                await scrape_website_with_pyppeteer(link, folder, timeout, downloaded, skipped, failed, visited)
 
-        return True  # Scraping succeeded
     except Exception as e:
         logger.error(f"Failed to scrape {url}: {e}")
-        return False  # Scraping failed
     finally:
         await browser.close()
 
 
 async def scrape_with_retries(url, folder, timeout, downloaded, skipped, failed, retries=3):
     for attempt in range(retries):
-        success = await scrape_website_with_pyppeteer(url, folder, timeout, downloaded, skipped, failed)
+        success = await scrape_website_with_pyppeteer(url, folder, timeout, downloaded, skipped, failed, set())
         if success:
             return True
         logger.warning(f"Retrying scraping for {url} (Attempt {attempt + 1}/{retries})")
@@ -220,10 +245,12 @@ def main():
     downloaded = []
     skipped = []
     failed = []
+    visited = set()
 
     try:
-        asyncio.run(scrape_with_retries(website_url, folder_name, args.timeout, downloaded, skipped, failed))
-        asyncio.run(parse_sitemap(website_url, folder_name, args.timeout, downloaded, skipped, failed))
+        asyncio.run(scrape_website_with_pyppeteer(website_url, folder_name, args.timeout, downloaded, skipped, failed, visited))
+        if not args.skip_sitemap:
+            asyncio.run(parse_sitemap(website_url, folder_name, args.timeout, downloaded, skipped, failed))
     except KeyboardInterrupt:
         print("\nProcess interrupted by user.")
         shutil.rmtree(folder_name, ignore_errors=True)
